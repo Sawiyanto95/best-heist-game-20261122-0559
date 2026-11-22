@@ -1,41 +1,33 @@
-'use strict';
-/* The Velvet Vault — the ceiling security camera.
-   Fixed to one spot, sweeping its red cone back and forth. Cameras cannot
-   be lured by a decoy, but smoke blinds them like anything else. */
+// The Velvet Vault — the ceiling cameras. Each one sweeps a fixed arc from
+// its wall mount, and its red cone watches the floor below. Smoke blinds it.
 
+import { dist, insideCone, tileCenter } from './util.js';
 
-Heist.CAMERA_RANGE = 210;
-Heist.CAMERA_HALF_ANGLE = 0.5; // about 29 degrees each side
+export const CAMERA_RANGE = 205;
+export const CAMERA_HALF_ANGLE = 0.44;
 
-Heist.makeCamera = function (def) {
-  const p = Heist.tileCenter(def.at[0], def.at[1]);
+export function makeCamera(def) {
+  const at = tileCenter(def.at[0], def.at[1]);
   return {
-    kind: 'camera',
-    x: p.x,
-    y: p.y,
+    x: at.x,
+    y: at.y,
     from: def.from,
     to: def.to,
     speed: def.speed,
-    phase: 0,
     angle: (def.from + def.to) / 2,
+    dir: 1,
     spotted: false,
+    sweepPhase: Math.random() * 6,
   };
-};
+}
 
-Heist.updateCamera = function (c, dt, player, map, smokes) {
-  c.phase += dt * c.speed;
-  const mid = (c.from + c.to) / 2;
-  const amp = (c.to - c.from) / 2;
-  c.angle = mid + Math.sin(c.phase) * amp;
-  c.spotted = Heist.cameraSees(c, player, map, smokes);
-};
+export function updateCamera(c, dt, player, map, clouds, cloaked) {
+  c.sweepPhase += dt;
+  c.angle += c.speed * c.dir * dt;
+  if (c.angle >= c.to) { c.angle = c.to; c.dir = -1; }
+  if (c.angle <= c.from) { c.angle = c.from; c.dir = 1; }
 
-Heist.cameraSees = function (c, player, map, smokes) {
-  if (Heist.inSmoke(player.x, player.y, smokes)) return false;
-  const d = Heist.dist(c.x, c.y, player.x, player.y);
-  if (d > Heist.CAMERA_RANGE) return false;
-  if (Heist.angleDiff(Heist.angleTo(c.x, c.y, player.x, player.y), c.angle) > Heist.CAMERA_HALF_ANGLE) {
-    return false;
-  }
-  return !Heist.lineBlocked(map, c.x, c.y, player.x, player.y, smokes);
-};
+  const inSmoke = clouds.some((cl) => dist(cl.x, cl.y, player.x, player.y) < cl.r);
+  c.spotted = !cloaked && !inSmoke &&
+    insideCone(map, c.x, c.y, c.angle, CAMERA_RANGE, CAMERA_HALF_ANGLE, player.x, player.y);
+}

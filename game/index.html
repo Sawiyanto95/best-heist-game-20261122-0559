@@ -1,20 +1,17 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>The Velvet Vault — a midnight heist game</title>
+<title>The Velvet Vault — an art-deco heist</title>
+<link rel="icon" href="data:,">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<canvas id="game" width="960" height="600"></canvas>
-<script src="js/util.js"></script>
-<script src="js/audio.js"></script>
-<script src="js/input.js"></script>
-<script src="js/levels.js"></script>
-<script src="js/guard.js"></script>
-<script src="js/camera.js"></script>
-<script src="js/render.js"></script>
-<script src="js/main.js"></script>
+<div id="stage">
+  <canvas id="game" width="1280" height="800"></canvas>
+  <p id="caption">The Velvet Vault — WASD move · E smoke · Q cloak · click toss a decoy coin · M mute</p>
+</div>
+<script type="module" src="js/main.js"></script>
 </body>
 </html>

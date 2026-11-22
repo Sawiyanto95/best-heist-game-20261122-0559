@@ -1,371 +1,439 @@
-'use strict';
-/* The Velvet Vault — everything the eye sees.
-   One canvas, one frame: the room Rook is crossing, the guards and their
-   vision cones, the cameras, the loot, and the alarm meter up top.
-   Cones are clipped by walls with a raycast, so cover reads as safety. */
+// The Velvet Vault — the art-deco renderer. Everything on screen is drawn
+// here from the state: marble floor, gold trim, velvet ropes, the thief,
+// the guards and their red cones, the cameras, the loot and the smoke.
+// Safe cover is teal and gold; danger is red; loot glows gold.
 
+import {
+  BOARD_X, BOARD_Y, BOARD_W, BOARD_H, TILE, COLS, ROWS, clamp,
+} from './util.js';
+import { GUARD_RANGE, GUARD_HALF_ANGLE } from './guard.js';
+import { CAMERA_RANGE, CAMERA_HALF_ANGLE } from './camera.js';
 
-/* A vision cone clipped by walls: cast a fan of rays and fill the polygon
-   they reach, fading with distance so the far edge melts away. */
-Heist.drawCone = function (ctx, map, x, y, facing, halfAngle, range, rgb) {
-  const rays = 13;
+const GOLD = '#d4a437';
+const GOLD_BRIGHT = '#ffd166';
+const NAVY = '#0d1b2a';
+const TEAL = '#123f3c';
+const TEAL_DARK = '#0e2f2d';
+const BURGUNDY = '#7a1f2b';
+const RED = '#e63946';
+const CREAM = '#f2e8cf';
+
+function conePath(ctx, x, y, facing, range, half) {
   ctx.beginPath();
   ctx.moveTo(x, y);
-  for (let i = 0; i < rays; i++) {
-    const a = facing - halfAngle + ((2 * halfAngle * i) / (rays - 1));
-    const d = Heist.castRay(map, x, y, a, range);
-    ctx.lineTo(x + Math.cos(a) * d, y + Math.sin(a) * d);
-  }
+  ctx.arc(x, y, range, facing - half, facing + half);
   ctx.closePath();
-  const grad = ctx.createRadialGradient(x, y, 8, x, y, range);
-  grad.addColorStop(0, `rgba(${rgb},0.34)`);
-  grad.addColorStop(0.7, `rgba(${rgb},0.16)`);
-  grad.addColorStop(1, `rgba(${rgb},0.02)`);
+}
+
+function drawVisionCone(ctx, x, y, facing, range, half, spotted, t) {
+  const pulse = spotted ? 0.42 + 0.1 * Math.sin(t * 14) : 0.2 + 0.03 * Math.sin(t * 3);
+  const grad = ctx.createRadialGradient(x, y, 10, x, y, range);
+  grad.addColorStop(0, spotted ? `rgba(230,57,70,${pulse + 0.25})` : `rgba(230,57,70,${pulse})`);
+  grad.addColorStop(1, 'rgba(230,57,70,0)');
   ctx.fillStyle = grad;
+  conePath(ctx, x, y, facing, range, half);
   ctx.fill();
-};
-
-Heist.drawRoom = function (ctx, map) {
-  for (let ty = 0; ty < Heist.ROWS; ty++) {
-    for (let tx = 0; tx < Heist.COLS; tx++) {
-      const x = tx * Heist.TILE;
-      const y = ty * Heist.TILE;
-      const c = map[ty][tx];
-      if (c === '#') {
-        ctx.fillStyle = '#0c1020';
-        ctx.fillRect(x, y, Heist.TILE, Heist.TILE);
-        ctx.fillStyle = '#232c4a';
-        ctx.fillRect(x, y, Heist.TILE, 3);
-        continue;
-      }
-      // Floor: quiet checker so movement reads at a glance.
-      ctx.fillStyle = (tx + ty) % 2 === 0 ? '#1a2138' : '#161c2f';
-      ctx.fillRect(x, y, Heist.TILE, Heist.TILE);
-      if (c === 'C') {
-        // Crate: wooden box, planks crossed.
-        ctx.fillStyle = '#6b4a26';
-        ctx.fillRect(x + 4, y + 4, Heist.TILE - 8, Heist.TILE - 8);
-        ctx.strokeStyle = '#4a3016';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(x + 4, y + 4, Heist.TILE - 8, Heist.TILE - 8);
-        ctx.beginPath();
-        ctx.moveTo(x + 4, y + 4);
-        ctx.lineTo(x + Heist.TILE - 4, y + Heist.TILE - 4);
-        ctx.moveTo(x + Heist.TILE - 4, y + 4);
-        ctx.lineTo(x + 4, y + Heist.TILE - 4);
-        ctx.stroke();
-      } else if (c === 'D') {
-        // Display case: gold frame, glass top, something glinting inside.
-        ctx.fillStyle = '#8a6d2f';
-        ctx.fillRect(x + 3, y + 3, Heist.TILE - 6, Heist.TILE - 6);
-        ctx.fillStyle = 'rgba(159,196,232,0.55)';
-        ctx.fillRect(x + 7, y + 7, Heist.TILE - 14, Heist.TILE - 14);
-        ctx.fillStyle = '#e8f4ff';
-        ctx.fillRect(x + 10, y + 10, 5, 5);
-      }
-    }
-  }
-};
-
-Heist.drawDiamond = function (ctx, d, t) {
-  if (d.taken) return;
-  const pulse = 1 + Math.sin(t * 4) * 0.08;
-  ctx.save();
-  ctx.translate(d.x, d.y);
-  ctx.scale(pulse, pulse);
-  ctx.fillStyle = '#7df9ff';
-  ctx.beginPath();
-  ctx.moveTo(0, -13);
-  ctx.lineTo(11, 0);
-  ctx.lineTo(0, 13);
-  ctx.lineTo(-11, 0);
-  ctx.closePath();
-  ctx.fill();
-  ctx.strokeStyle = '#e8feff';
+  ctx.strokeStyle = spotted ? 'rgba(255,90,100,0.85)' : 'rgba(230,57,70,0.4)';
   ctx.lineWidth = 1.5;
   ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(-11, 0);
-  ctx.lineTo(11, 0);
-  ctx.moveTo(0, -13);
-  ctx.lineTo(0, 13);
-  ctx.stroke();
-  ctx.restore();
-  // Sparkle.
-  const sx = d.x + Math.sin(t * 3) * 14;
-  const sy = d.y - 14 + Math.cos(t * 2.3) * 4;
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(sx - 1, sy - 1, 2, 2);
-};
+}
 
-Heist.drawCoin = function (ctx, c, t) {
-  if (c.taken) return;
-  const bob = Math.sin(t * 3 + c.x) * 2;
-  ctx.fillStyle = '#ffd34d';
-  ctx.beginPath();
-  ctx.arc(c.x, c.y + bob, 8, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.strokeStyle = '#a87608';
-  ctx.lineWidth = 2;
-  ctx.stroke();
-  ctx.fillStyle = '#a87608';
-  ctx.font = 'bold 10px system-ui, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText('$', c.x, c.y + bob + 0.5);
-};
-
-Heist.drawExit = function (ctx, e, open, t) {
-  const glow = open ? 0.55 + Math.sin(t * 5) * 0.2 : 0.25;
-  ctx.fillStyle = open ? `rgba(80,255,140,${glow})` : `rgba(255,70,70,${glow})`;
-  ctx.fillRect(e.x - 18, e.y - 18, 36, 36);
-  ctx.strokeStyle = open ? '#50ff8c' : '#ff4646';
-  ctx.lineWidth = 3;
-  ctx.strokeRect(e.x - 18, e.y - 18, 36, 36);
-  ctx.fillStyle = '#ffffff';
-  ctx.font = 'bold 11px system-ui, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(open ? 'EXIT' : 'LOCK', e.x, e.y);
-};
-
-Heist.drawGuard = function (ctx, g, t, map) {
-  const alerted = g.alert > 0;
-  const col = alerted ? '255,80,60' : '255,214,64';
-  Heist.drawCone(ctx, map, g.x, g.y, g.facing, Heist.GUARD_HALF_ANGLE, Heist.GUARD_RANGE, col);
-  // Body: dark suit, pale head, cap brim pointing where he looks.
-  ctx.fillStyle = '#2b2f3a';
-  ctx.beginPath();
-  ctx.arc(g.x, g.y, 12, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#d9a066';
-  ctx.beginPath();
-  ctx.arc(g.x, g.y, 7, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.strokeStyle = '#1c1f28';
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.moveTo(g.x, g.y);
-  ctx.lineTo(g.x + Math.cos(g.facing) * 15, g.y + Math.sin(g.facing) * 15);
-  ctx.stroke();
-  if (alerted) {
-    ctx.fillStyle = '#ff5040';
-    ctx.font = 'bold 16px system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('!', g.x, g.y - 20);
-  }
-};
-
-Heist.drawCamera = function (ctx, c, t, map) {
-  Heist.drawCone(ctx, map, c.x, c.y, c.angle, Heist.CAMERA_HALF_ANGLE, Heist.CAMERA_RANGE, '255,60,60');
-  ctx.fillStyle = '#20242e';
-  ctx.fillRect(c.x - 9, c.y - 7, 18, 14);
-  ctx.fillStyle = c.spotted ? '#ff2020' : '#ff5050';
-  ctx.beginPath();
-  ctx.arc(c.x + Math.cos(c.angle) * 9, c.y + Math.sin(c.angle) * 9, 3.5, 0, Math.PI * 2);
-  ctx.fill();
-  const blink = Math.sin(t * 6) > 0;
-  if (blink) {
-    ctx.fillStyle = '#ff2020';
-    ctx.beginPath();
-    ctx.arc(c.x - 6, c.y - 6, 2, 0, Math.PI * 2);
-    ctx.fill();
-  }
-};
-
-Heist.drawPlayer = function (ctx, p, t) {
-  const bob = Math.sin(t * 8) * 1.5;
-  // Hooded thief: teal cloak, pale mask, white rim so he reads at a glance.
-  ctx.strokeStyle = 'rgba(255,255,255,0.85)';
-  ctx.lineWidth = 2;
-  ctx.fillStyle = '#1f7a6d';
-  ctx.beginPath();
-  ctx.arc(p.x, p.y + bob, 12, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.stroke();
-  ctx.fillStyle = '#e8e0c8';
-  ctx.beginPath();
-  ctx.arc(p.x, p.y + bob - 2, 6.5, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#1f2a33';
-  ctx.fillRect(p.x - 5, p.y + bob - 4, 10, 3);
-};
-
-Heist.drawSmoke = function (ctx, s, t) {
-  const wob = Math.sin(t * 5 + s.x) * 3;
-  const grad = ctx.createRadialGradient(s.x, s.y, 4, s.x, s.y, s.r);
-  grad.addColorStop(0, 'rgba(200,200,210,0.5)');
-  grad.addColorStop(1, 'rgba(200,200,210,0.02)');
-  ctx.fillStyle = grad;
-  ctx.beginPath();
-  ctx.arc(s.x + wob, s.y, s.r, 0, Math.PI * 2);
-  ctx.fill();
-};
-
-Heist.drawDecoy = function (ctx, d, t) {
-  if (!d) return;
-  const glint = 0.6 + Math.sin(t * 8) * 0.4;
-  ctx.fillStyle = `rgba(255,211,77,${glint})`;
-  ctx.beginPath();
-  ctx.arc(d.x, d.y, 7, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.strokeStyle = '#a87608';
-  ctx.lineWidth = 2;
-  ctx.stroke();
-};
-
-Heist.drawHUD = function (ctx, s) {
-  ctx.fillStyle = 'rgba(8,10,20,0.82)';
-  ctx.fillRect(0, 0, Heist.W, 44);
-  ctx.fillStyle = '#8a6d2f';
-  ctx.fillRect(0, 44, Heist.W, 2);
-
-  ctx.textBaseline = 'middle';
-  ctx.textAlign = 'left';
-  ctx.fillStyle = '#e8e0c8';
-  ctx.font = 'bold 14px system-ui, sans-serif';
-  ctx.fillText(`LEVEL ${s.levelIndex + 1} — ${s.level.name.toUpperCase()}`, 12, 23);
-
-  // Alarm meter, centre.
-  const ax = Heist.W / 2 - 120;
-  ctx.fillStyle = '#ff5a4a';
-  ctx.font = 'bold 12px system-ui, sans-serif';
-  ctx.fillText('ALARM', ax - 52, 23);
-  ctx.fillStyle = '#2a2f42';
-  ctx.fillRect(ax, 14, 240, 16);
-  const frac = Heist.clamp(s.alarm / 100, 0, 1);
-  ctx.fillStyle = frac < 0.5 ? '#e8c832' : frac < 0.8 ? '#ff8c2e' : '#ff2e2e';
-  ctx.fillRect(ax, 14, 240 * frac, 16);
-  ctx.strokeStyle = '#e8e0c8';
-  ctx.lineWidth = 1;
-  ctx.strokeRect(ax, 14, 240, 16);
-
-  // Right side: score, loot, tools, lives, time.
-  ctx.textAlign = 'right';
-  ctx.fillStyle = '#e8e0c8';
-  ctx.font = 'bold 14px system-ui, sans-serif';
-  const mm = Math.floor(s.time / 60);
-  const ss = String(Math.floor(s.time % 60)).padStart(2, '0');
-  ctx.fillText(`SCORE ${s.score}   ◆ ${s.diamond.taken ? '1' : '0'}/1   $ ${s.coinsTaken}/${s.coins.length}   ◐ ${s.smokes}   ○ ${s.decoys}   ♥ ${s.lives}   ${mm}:${ss}`, Heist.W - 12, 23);
-
-  // Bottom hint.
-  ctx.textAlign = 'center';
-  ctx.fillStyle = 'rgba(232,224,200,0.6)';
-  ctx.font = '12px system-ui, sans-serif';
-  ctx.fillText('WASD / arrows — move   ·   E — smoke bomb (costs 100)   ·   Click — toss a decoy coin (costs 50)   ·   M — mute', Heist.W / 2, Heist.H - 10);
-
-  // Toast message.
-  if (s.toast && s.toast.t > 0) {
-    ctx.textAlign = 'center';
-    ctx.font = 'bold 20px system-ui, sans-serif';
-    ctx.fillStyle = 'rgba(8,10,20,0.7)';
-    const w = ctx.measureText(s.toast.text).width + 28;
-    ctx.fillRect(Heist.W / 2 - w / 2, 56, w, 32);
-    ctx.fillStyle = '#ffd34d';
-    ctx.fillText(s.toast.text, Heist.W / 2, 73);
-  }
-};
-
-Heist.drawTitle = function (ctx, t) {
-  ctx.fillStyle = 'rgba(6,8,16,0.88)';
-  ctx.fillRect(0, 0, Heist.W, Heist.H);
-  ctx.textAlign = 'center';
-  ctx.fillStyle = '#ffd34d';
-  ctx.font = 'bold 54px Georgia, serif';
-  ctx.fillText('THE VELVET VAULT', Heist.W / 2, 150);
-  ctx.fillStyle = '#7df9ff';
-  ctx.font = 'italic 20px Georgia, serif';
-  ctx.fillText('a midnight heist in three rooms', Heist.W / 2, 188);
-  ctx.fillStyle = '#e8e0c8';
-  ctx.font = '16px system-ui, sans-serif';
-  const lines = [
-    'You are Rook, the thief. Lift the Velvet Diamond from each room,',
-    'then slip out the exit — unseen. Guards patrol with vision cones,',
-    'cameras sweep the halls, and every second you are seen, the alarm climbs.',
-    '',
-    'WASD / arrows — move      E — smoke bomb      Click — toss a decoy coin',
-    'Hide behind crates and display cases: what blocks your body blocks their sight.',
-  ];
-  lines.forEach((line, i) => ctx.fillText(line, Heist.W / 2, 240 + i * 26));
-  const pulse = 0.65 + Math.sin(t * 3) * 0.35;
-  ctx.fillStyle = `rgba(255,211,77,${pulse})`;
-  ctx.font = 'bold 20px system-ui, sans-serif';
-  ctx.fillText('Click or press Enter to begin', Heist.W / 2, 440);
-};
-
-Heist.drawOverlay = function (ctx, s) {
-  if (s.mode === 'clear') {
-    ctx.fillStyle = 'rgba(6,8,16,0.78)';
-    ctx.fillRect(0, 0, Heist.W, Heist.H);
-    ctx.textAlign = 'center';
-    ctx.fillStyle = '#50ff8c';
-    ctx.font = 'bold 44px Georgia, serif';
-    ctx.fillText('ROOM CLEARED', Heist.W / 2, 230);
-    ctx.fillStyle = '#e8e0c8';
-    ctx.font = '18px system-ui, sans-serif';
-    ctx.fillText(`Time bonus +${s.clearBonus}   ·   Score ${s.score}`, Heist.W / 2, 280);
-    ctx.fillStyle = '#ffd34d';
-    ctx.font = 'bold 20px system-ui, sans-serif';
-    ctx.fillText('Click for the next room', Heist.W / 2, 330);
-  } else if (s.mode === 'over') {
-    ctx.fillStyle = 'rgba(20,4,6,0.88)';
-    ctx.fillRect(0, 0, Heist.W, Heist.H);
-    ctx.textAlign = 'center';
-    ctx.fillStyle = '#ff5a4a';
-    ctx.font = 'bold 44px Georgia, serif';
-    ctx.fillText('THE CREW GOT PINCHED', Heist.W / 2, 240);
-    ctx.fillStyle = '#e8e0c8';
-    ctx.font = '18px system-ui, sans-serif';
-    ctx.fillText(`Score ${s.score} — the vault keeps its diamonds tonight.`, Heist.W / 2, 290);
-    ctx.fillStyle = '#ffd34d';
-    ctx.font = 'bold 20px system-ui, sans-serif';
-    ctx.fillText('Click to try the room again', Heist.W / 2, 340);
-  } else if (s.mode === 'win') {
-    ctx.fillStyle = 'rgba(6,8,16,0.88)';
-    ctx.fillRect(0, 0, Heist.W, Heist.H);
-    ctx.textAlign = 'center';
-    ctx.fillStyle = '#ffd34d';
-    ctx.font = 'bold 48px Georgia, serif';
-    ctx.fillText('THE VAULT IS YOURS', Heist.W / 2, 220);
-    ctx.fillStyle = '#7df9ff';
-    ctx.font = 'italic 20px Georgia, serif';
-    ctx.fillText('Three rooms, three diamonds, not a single guard the wiser.', Heist.W / 2, 262);
-    ctx.fillStyle = '#e8e0c8';
-    ctx.font = '18px system-ui, sans-serif';
-    ctx.fillText(`Final score ${s.score}`, Heist.W / 2, 310);
-    ctx.fillStyle = '#ffd34d';
-    ctx.font = 'bold 20px system-ui, sans-serif';
-    ctx.fillText('Click to play again', Heist.W / 2, 360);
-  }
-  if (s.mode === 'caught' || s.flash > 0) {
-    ctx.fillStyle = `rgba(255,30,30,${Math.max(s.flash, s.mode === 'caught' ? 0.25 : 0)})`;
-    ctx.fillRect(0, 0, Heist.W, Heist.H);
-    if (s.mode === 'caught') {
-      ctx.textAlign = 'center';
-      ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 52px Georgia, serif';
-      ctx.fillText('CAUGHT!', Heist.W / 2, Heist.H / 2 - 10);
-      ctx.font = '18px system-ui, sans-serif';
-      ctx.fillText('The alarm hit the roof. Back to the door.', Heist.W / 2, Heist.H / 2 + 28);
+function drawFloor(ctx, t) {
+  // Marble checker in deep teal, gold grout, burgundy carpet runners.
+  for (let ty = 0; ty < ROWS; ty++) {
+    for (let tx = 0; tx < COLS; tx++) {
+      const even = (tx + ty) % 2 === 0;
+      ctx.fillStyle = even ? TEAL : TEAL_DARK;
+      ctx.fillRect(BOARD_X + tx * TILE, BOARD_Y + ty * TILE, TILE, TILE);
     }
   }
-};
+  ctx.strokeStyle = 'rgba(212,164,55,0.16)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= COLS; i++) {
+    ctx.beginPath();
+    ctx.moveTo(BOARD_X + i * TILE, BOARD_Y);
+    ctx.lineTo(BOARD_X + i * TILE, BOARD_Y + BOARD_H);
+    ctx.stroke();
+  }
+  for (let i = 0; i <= ROWS; i++) {
+    ctx.beginPath();
+    ctx.moveTo(BOARD_X, BOARD_Y + i * TILE);
+    ctx.lineTo(BOARD_X + BOARD_W, BOARD_Y + i * TILE);
+    ctx.stroke();
+  }
+  // Burgundy carpet runner down the middle columns, gold border.
+  const carpetX = BOARD_X + 11 * TILE;
+  ctx.fillStyle = 'rgba(122,31,43,0.55)';
+  ctx.fillRect(carpetX, BOARD_Y, 2 * TILE, BOARD_H);
+  ctx.strokeStyle = GOLD;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(carpetX + 2, BOARD_Y + 4, 2 * TILE - 4, BOARD_H - 8);
+  // Gold sunburst medallion at the centre of the room.
+  const cx = BOARD_X + BOARD_W / 2;
+  const cy = BOARD_Y + BOARD_H / 2;
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.strokeStyle = 'rgba(212,164,55,0.35)';
+  ctx.lineWidth = 2;
+  for (let i = 0; i < 12; i++) {
+    const a = (i / 12) * Math.PI * 2;
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(a) * 18, Math.sin(a) * 18);
+    ctx.lineTo(Math.cos(a) * 34, Math.sin(a) * 34);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
 
-/* One full frame: room, cones, loot, thief, HUD, and any overlay. */
-Heist.drawGame = function (ctx, s, t) {
-  ctx.clearRect(0, 0, Heist.W, Heist.H);
-  ctx.fillStyle = '#10142a';
-  ctx.fillRect(0, 0, Heist.W, Heist.H);
-  Heist.drawRoom(ctx, s.map);
-  Heist.drawExit(ctx, s.exit, s.diamond.taken, t);
-  Heist.drawDiamond(ctx, s.diamond, t);
-  for (const c of s.coins) Heist.drawCoin(ctx, c, t);
-  for (const cam of s.cameras) Heist.drawCamera(ctx, cam, t, s.map);
-  for (const g of s.guards) Heist.drawGuard(ctx, g, t, s.map);
-  Heist.drawDecoy(ctx, s.decoy, t);
-  for (const sm of s.smokeClouds) Heist.drawSmoke(ctx, sm, t);
-  if (s.mode !== 'title') Heist.drawPlayer(ctx, s.player, t);
-  Heist.drawHUD(ctx, s);
-  if (s.mode === 'title') Heist.drawTitle(ctx, t);
-  else Heist.drawOverlay(ctx, s);
-};
+function drawWallsAndProps(ctx, map, t) {
+  for (let ty = 0; ty < ROWS; ty++) {
+    for (let tx = 0; tx < COLS; tx++) {
+      const ch = map[ty][tx];
+      const px = BOARD_X + tx * TILE;
+      const py = BOARD_Y + ty * TILE;
+      if (ch === '#') {
+        ctx.fillStyle = '#16283d';
+        ctx.fillRect(px, py, TILE, TILE);
+        ctx.strokeStyle = GOLD;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(px + 3, py + 3, TILE - 6, TILE - 6);
+        // Art-deco chevron on wall tiles.
+        ctx.strokeStyle = 'rgba(212,164,55,0.5)';
+        ctx.beginPath();
+        ctx.moveTo(px + 10, py + 26);
+        ctx.lineTo(px + 20, py + 14);
+        ctx.lineTo(px + 30, py + 26);
+        ctx.stroke();
+      } else if (ch === 'C') {
+        // Wooden crate with gold bands — safe cover.
+        ctx.fillStyle = '#5a3a22';
+        ctx.fillRect(px + 3, py + 3, TILE - 6, TILE - 6);
+        ctx.strokeStyle = GOLD;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(px + 3, py + 3, TILE - 6, TILE - 6);
+        ctx.beginPath();
+        ctx.moveTo(px + 3, py + TILE / 2);
+        ctx.lineTo(px + TILE - 3, py + TILE / 2);
+        ctx.stroke();
+      } else if (ch === 'D') {
+        // Glass display case on a gold plinth — safe cover.
+        ctx.fillStyle = '#1b3a4b';
+        ctx.fillRect(px + 5, py + 5, TILE - 10, TILE - 10);
+        ctx.fillStyle = 'rgba(210,230,255,0.25)';
+        ctx.fillRect(px + 9, py + 9, TILE - 18, TILE - 18);
+        ctx.strokeStyle = GOLD;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(px + 5, py + 5, TILE - 10, TILE - 10);
+      } else if (ch === 'V') {
+        // Velvet rope between two gold posts.
+        ctx.fillStyle = GOLD;
+        ctx.beginPath();
+        ctx.arc(px + 6, py + TILE / 2, 4, 0, Math.PI * 2);
+        ctx.arc(px + TILE - 6, py + TILE / 2, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = BURGUNDY;
+        ctx.lineWidth = 5;
+        ctx.beginPath();
+        ctx.moveTo(px + 6, py + TILE / 2 + 4);
+        ctx.quadraticCurveTo(px + TILE / 2, py + TILE / 2 + 12, px + TILE - 6, py + TILE / 2 + 4);
+        ctx.stroke();
+      } else if (ch === '|') {
+        // Laser beam: a hot red line across the tile.
+        const flicker = 0.6 + 0.4 * Math.sin(t * 9 + tx * 1.7);
+        ctx.strokeStyle = `rgba(255,40,60,${flicker})`;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(px + TILE / 2, py + 2);
+        ctx.lineTo(px + TILE / 2, py + TILE - 2);
+        ctx.stroke();
+        ctx.fillStyle = `rgba(255,40,60,${flicker})`;
+        ctx.beginPath();
+        ctx.arc(px + TILE / 2, py + 4, 3, 0, Math.PI * 2);
+        ctx.arc(px + TILE / 2, py + TILE - 4, 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+}
+
+function drawPaintings(ctx) {
+  // Gold-framed paintings on the top and bottom walls.
+  const frames = [3, 8, 15, 20];
+  for (const tx of frames) {
+    const px = BOARD_X + tx * TILE;
+    ctx.fillStyle = '#2a1a2e';
+    ctx.fillRect(px + 4, BOARD_Y - 2, TILE - 8, 10);
+    ctx.strokeStyle = GOLD;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(px + 4, BOARD_Y - 2, TILE - 8, 10);
+  }
+}
+
+function drawLoot(ctx, state, t) {
+  const d = state.diamond;
+  if (d.taken) return;
+  const glow = 0.5 + 0.3 * Math.sin(t * 4);
+  const grad = ctx.createRadialGradient(d.x, d.y, 4, d.x, d.y, 46);
+  grad.addColorStop(0, `rgba(255,209,102,${glow})`);
+  grad.addColorStop(1, 'rgba(255,209,102,0)');
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(d.x, d.y, 46, 0, Math.PI * 2);
+  ctx.fill();
+  // The diamond itself, gold pedestal beneath.
+  ctx.fillStyle = GOLD;
+  ctx.fillRect(d.x - 14, d.y + 8, 28, 6);
+  ctx.fillStyle = GOLD_BRIGHT;
+  ctx.beginPath();
+  ctx.moveTo(d.x, d.y - 14);
+  ctx.lineTo(d.x + 11, d.y - 2);
+  ctx.lineTo(d.x, d.y + 8);
+  ctx.lineTo(d.x - 11, d.y - 2);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = '#fff6d8';
+  ctx.beginPath();
+  ctx.moveTo(d.x, d.y - 14);
+  ctx.lineTo(d.x + 5, d.y - 2);
+  ctx.lineTo(d.x, d.y + 2);
+  ctx.lineTo(d.x - 5, d.y - 2);
+  ctx.closePath();
+  ctx.fill();
+  // "LOOT" label so the target reads at a glance.
+  ctx.font = 'bold 11px Georgia, serif';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = GOLD_BRIGHT;
+  ctx.fillText('★ LOOT ★', d.x, d.y - 22);
+}
+
+function drawCoins(ctx, state, t) {
+  for (const c of state.coins) {
+    if (c.taken) continue;
+    const bob = Math.sin(t * 3 + c.x) * 2;
+    ctx.fillStyle = GOLD_BRIGHT;
+    ctx.beginPath();
+    ctx.arc(c.x, c.y + bob, 7, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#8a6d1f';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = '#8a6d1f';
+    ctx.font = 'bold 9px Georgia, serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('$', c.x, c.y + bob + 3);
+  }
+  for (const g of state.gold) {
+    if (g.taken) continue;
+    ctx.fillStyle = GOLD_BRIGHT;
+    ctx.fillRect(g.x - 9, g.y - 5, 18, 10);
+    ctx.strokeStyle = '#8a6d1f';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(g.x - 9, g.y - 5, 18, 10);
+  }
+}
+
+function drawExit(ctx, state, t) {
+  const e = state.exit;
+  const open = state.diamond.taken;
+  const glow = open ? 0.5 + 0.3 * Math.sin(t * 5) : 0.12;
+  ctx.fillStyle = `rgba(80,220,140,${glow})`;
+  ctx.beginPath();
+  ctx.arc(e.x, e.y, 30, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = open ? '#50dc8c' : '#4a6b57';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(e.x, e.y, 22, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.font = 'bold 11px Georgia, serif';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = open ? '#a9f5c6' : '#7fa88f';
+  ctx.fillText(open ? 'EXIT ✓' : 'EXIT', e.x, e.y - 30);
+  // Door posts.
+  ctx.fillStyle = GOLD;
+  ctx.fillRect(e.x - 24, e.y - 18, 4, 36);
+  ctx.fillRect(e.x + 20, e.y - 18, 4, 36);
+}
+
+function drawGuard(ctx, g, t) {
+  // Navy uniform, peaked cap, red "!" when he has spotted Rook.
+  const bob = Math.sin(g.walkPhase) * 1.5;
+  ctx.save();
+  ctx.translate(g.x, g.y + bob);
+  ctx.fillStyle = '#1c2f4a';
+  ctx.beginPath();
+  ctx.arc(0, 0, 13, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = GOLD;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  // Cap brim in the facing direction.
+  ctx.fillStyle = '#101c2e';
+  ctx.beginPath();
+  ctx.arc(Math.cos(g.facing) * 4, Math.sin(g.facing) * 4 - 8, 7, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = GOLD;
+  ctx.beginPath();
+  ctx.arc(Math.cos(g.facing) * 9, Math.sin(g.facing) * 9 - 8, 2.5, 0, Math.PI * 2);
+  ctx.fill();
+  // Eyes.
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.arc(Math.cos(g.facing) * 5 - 3, Math.sin(g.facing) * 5 - 1, 2, 0, Math.PI * 2);
+  ctx.arc(Math.cos(g.facing) * 5 + 3, Math.sin(g.facing) * 5 - 1, 2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+  if (g.spotted || g.alert > 0) {
+    ctx.font = 'bold 22px Georgia, serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = RED;
+    ctx.fillText('!', g.x, g.y - 22);
+  }
+}
+
+function drawCamera(ctx, c, t) {
+  // Gold dome on the wall, red lens sweeping with its cone.
+  ctx.fillStyle = '#3a2f12';
+  ctx.beginPath();
+  ctx.arc(c.x, c.y, 11, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = GOLD;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.fillStyle = c.spotted ? '#ff2d3c' : '#ff5a64';
+  ctx.beginPath();
+  ctx.arc(c.x + Math.cos(c.angle) * 5, c.y + Math.sin(c.angle) * 5, 4, 0, Math.PI * 2);
+  ctx.fill();
+  if (c.spotted) {
+    ctx.font = 'bold 13px Georgia, serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = RED;
+    ctx.fillText('REC ●', c.x, c.y - 18);
+  }
+}
+
+function drawPlayer(ctx, state, t) {
+  const p = state.player;
+  const cloaked = state.cloakT > 0;
+  ctx.save();
+  if (cloaked) ctx.globalAlpha = 0.45 + 0.15 * Math.sin(t * 10);
+  // Shadow.
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  ctx.beginPath();
+  ctx.ellipse(p.x, p.y + 11, 12, 5, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Rook: black coat, burgundy scarf, gold mask glint.
+  ctx.fillStyle = '#0a0a0f';
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, 12, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = GOLD_BRIGHT;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.strokeStyle = BURGUNDY;
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.arc(p.x, p.y + 2, 9, Math.PI * 0.15, Math.PI * 0.85);
+  ctx.stroke();
+  ctx.fillStyle = GOLD_BRIGHT;
+  ctx.beginPath();
+  ctx.arc(p.x - 4, p.y - 2, 2, 0, Math.PI * 2);
+  ctx.arc(p.x + 4, p.y - 2, 2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+  // Direction tick so movement reads clearly.
+  const mv = state.lastMove;
+  if (mv && (mv.x !== 0 || mv.y !== 0)) {
+    ctx.strokeStyle = 'rgba(255,209,102,0.7)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y);
+    ctx.lineTo(p.x + mv.x * 18, p.y + mv.y * 18);
+    ctx.stroke();
+  }
+  // "ROOK" label.
+  ctx.font = 'bold 11px Georgia, serif';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = CREAM;
+  ctx.fillText('ROOK', p.x, p.y - 20);
+}
+
+function drawSmoke(ctx, state) {
+  for (const sm of state.smokeClouds) {
+    const grad = ctx.createRadialGradient(sm.x, sm.y, 6, sm.x, sm.y, sm.r);
+    grad.addColorStop(0, 'rgba(220,220,230,0.55)');
+    grad.addColorStop(1, 'rgba(220,220,230,0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(sm.x, sm.y, sm.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawDecoy(ctx, state, t) {
+  const d = state.decoy;
+  if (!d) return;
+  const ping = (Math.sin(t * 6) + 1) / 2;
+  ctx.strokeStyle = `rgba(255,209,102,${0.5 + ping * 0.5})`;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(d.x, d.y, 12 + ping * 8, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.fillStyle = GOLD_BRIGHT;
+  ctx.beginPath();
+  ctx.arc(d.x, d.y, 5, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawVignette(ctx, state, t) {
+  // Tension: the screen edges burn red as the alarm climbs.
+  const a = state.alarm / 100;
+  if (a < 0.25) return;
+  const grad = ctx.createRadialGradient(640, 400, 260, 640, 400, 720);
+  grad.addColorStop(0, 'rgba(230,57,70,0)');
+  grad.addColorStop(1, `rgba(230,57,70,${0.12 + a * 0.3})`);
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 1280, 800);
+}
+
+export function drawGame(ctx, state, t) {
+  ctx.save();
+  // Screen shake while caught.
+  if (state.flash > 0) {
+    const s = state.flash * 14;
+    ctx.translate((Math.random() - 0.5) * s, (Math.random() - 0.5) * s);
+  }
+  // Backdrop.
+  ctx.fillStyle = NAVY;
+  ctx.fillRect(-20, -20, 1320, 840);
+  // Gold frame around the board.
+  ctx.strokeStyle = GOLD;
+  ctx.lineWidth = 3;
+  ctx.strokeRect(BOARD_X - 8, BOARD_Y - 8, BOARD_W + 16, BOARD_H + 16);
+  ctx.strokeStyle = 'rgba(212,164,55,0.4)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(BOARD_X - 14, BOARD_Y - 14, BOARD_W + 28, BOARD_H + 28);
+
+  drawFloor(ctx, t);
+  drawWallsAndProps(ctx, state.map, t);
+  drawPaintings(ctx);
+  drawExit(ctx, state, t);
+  drawLoot(ctx, state, t);
+  drawCoins(ctx, state, t);
+
+  // Vision cones first, then the watchers standing in them.
+  for (const c of state.cameras) {
+    drawVisionCone(ctx, c.x, c.y, c.angle, CAMERA_RANGE, CAMERA_HALF_ANGLE, c.spotted, t);
+  }
+  for (const g of state.guards) {
+    drawVisionCone(ctx, g.x, g.y, g.facing, GUARD_RANGE, GUARD_HALF_ANGLE, g.spotted, t);
+  }
+  for (const c of state.cameras) drawCamera(ctx, c, t);
+  for (const g of state.guards) drawGuard(ctx, g, t);
+
+  drawSmoke(ctx, state);
+  drawDecoy(ctx, state, t);
+  drawPlayer(ctx, state, t);
+  drawVignette(ctx, state, t);
+  ctx.restore();
+}

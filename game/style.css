@@ -1,24 +1,29 @@
-/* The Velvet Vault — page chrome. The game itself is the canvas. */
-html,
-body {
+/* The Velvet Vault — art-deco museum at night: navy, gold, burgundy. */
+html, body {
   margin: 0;
   padding: 0;
-  height: 100%;
-  background: #070912;
-  overflow: hidden;
+  background: #070d16;
+  min-height: 100%;
+  font-family: Georgia, 'Times New Roman', serif;
 }
-
-body {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+#stage {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 0;
 }
-
-canvas {
+#game {
   display: block;
-  width: min(100vw, 160vh);
-  height: min(100vh, 62.5vw);
-  background: #10142a;
-  box-shadow: 0 0 0 2px #8a6d2f, 0 0 48px rgba(0, 0, 0, 0.8);
-  cursor: crosshair;
+  width: 1280px;
+  height: 800px;
+  background: #0d1b2a;
+}
+#caption {
+  margin: 0;
+  padding: 10px 14px;
+  color: #d4a437;
+  background: #0d1b2a;
+  border-top: 2px solid #d4a437;
+  font-size: 14px;
+  letter-spacing: 0.04em;
+  text-align: center;
 }

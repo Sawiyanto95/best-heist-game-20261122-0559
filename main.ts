@@ -1,4 +1,5 @@
-// The Velvet Vault — a midnight heist game (Node 22, standard library only).
+// The Velvet Vault v2 — an art-deco museum heist in four rooms (Node 22,
+// standard library only).
 //
 // This program hands the game in: it copies this repository's game/ and
 // screenshots/ into /output and writes /output/dossier.json, the summary the

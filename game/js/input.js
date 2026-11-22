@@ -1,64 +1,61 @@
-'use strict';
-/* The Velvet Vault — keyboard and mouse.
-   WASD or arrows move Rook, E drops a smoke bomb, Q tosses a decoy coin,
-   and a mouse click on the floor tosses a decoy to that exact spot.
-   Clicks on the canvas are queued so the game can spend them. */
+// The Velvet Vault — keyboard and mouse input. Keys are tracked by code so
+// WASD and arrows both work; mouse clicks queue board positions for decoys.
 
+import { BOARD_X, BOARD_Y } from './util.js';
 
-Heist.input = {
-  keys: {},
-  clicks: [], // {x, y} in canvas pixels, oldest first
-  mouseX: 0,
-  mouseY: 0,
+export class VaultInput {
+  constructor() {
+    this.down = new Set();
+    this.justPressed = new Set();
+    this.clicks = [];
+  }
 
-  attach: function (canvas) {
+  attach(canvas) {
     window.addEventListener('keydown', (e) => {
-      if (e.repeat) return; // holding a key must not re-trigger tools
-      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' '].includes(e.key)) {
+      const k = e.key.toLowerCase();
+      if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(k)) {
         e.preventDefault();
       }
-      this.keys[e.key.toLowerCase()] = true;
+      if (!e.repeat) this.justPressed.add(k);
+      this.down.add(k);
     });
     window.addEventListener('keyup', (e) => {
-      this.keys[e.key.toLowerCase()] = false;
-    });
-    canvas.addEventListener('mousemove', (e) => {
-      const r = canvas.getBoundingClientRect();
-      this.mouseX = ((e.clientX - r.left) / r.width) * Heist.W;
-      this.mouseY = ((e.clientY - r.top) / r.height) * Heist.H;
+      this.down.delete(e.key.toLowerCase());
     });
     canvas.addEventListener('mousedown', (e) => {
-      const r = canvas.getBoundingClientRect();
-      const x = ((e.clientX - r.left) / r.width) * Heist.W;
-      const y = ((e.clientY - r.top) / r.height) * Heist.H;
-      this.clicks.push({ x, y });
-      Heist.audio.ensure();
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      this.clicks.push({
+        x: (e.clientX - rect.left) * scaleX,
+        y: (e.clientY - rect.top) * scaleY,
+      });
     });
-  },
+    window.addEventListener('blur', () => {
+      this.down.clear();
+    });
+  }
 
-  /* Movement vector from the keys held down, normalised. */
-  moveVector: function () {
+  moveVector() {
     let x = 0;
     let y = 0;
-    const k = this.keys;
-    if (k['a'] || k['arrowleft']) x -= 1;
-    if (k['d'] || k['arrowright']) x += 1;
-    if (k['w'] || k['arrowup']) y -= 1;
-    if (k['s'] || k['arrowdown']) y += 1;
+    if (this.down.has('a') || this.down.has('arrowleft')) x -= 1;
+    if (this.down.has('d') || this.down.has('arrowright')) x += 1;
+    if (this.down.has('w') || this.down.has('arrowup')) y -= 1;
+    if (this.down.has('s') || this.down.has('arrowdown')) y += 1;
     if (x !== 0 && y !== 0) {
-      const inv = 1 / Math.sqrt(2);
-      x *= inv;
-      y *= inv;
+      const n = Math.hypot(x, y);
+      x /= n;
+      y /= n;
     }
     return { x, y };
-  },
+  }
 
-  /* True once when a key is pressed (edge, not hold). Callers clear it. */
-  pressed: function (key) {
-    if (this.keys[key]) {
-      this.keys[key] = false;
-      return true;
-    }
-    return false;
-  },
-};
+  pressed(key) {
+    return this.justPressed.has(key);
+  }
+
+  endFrame() {
+    this.justPressed.clear();
+  }
+}

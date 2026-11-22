@@ -1,174 +1,176 @@
-'use strict';
-/* The Velvet Vault — the game itself: state machine, level flow, the alarm,
-   the tools, and the staged states the screenshots are taken from.
-   Modes: title → play → caught → clear → over → win. */
+// The Velvet Vault — the game itself: state machine, level flow, the alarm,
+// lasers, pickups, and the staged states the screenshots are taken from.
+// Modes: title → play → caught → clear → over → win.
 
+import { TILE, BOARD_X, BOARD_Y, dist, moveCircle, tileAt, tileCenter, isLaserTile } from './util.js';
+import { LEVELS, findMarks } from './levels.js';
+import { makeGuard, updateGuard } from './guard.js';
+import { makeCamera, updateCamera } from './camera.js';
+import { VaultAudio } from './audio.js';
+import { VaultInput } from './input.js';
+import { dropSmoke, throwDecoy, raiseCloak } from './tools.js';
+import { drawGame } from './render.js';
+import { drawHud } from './hud.js';
 
-Heist.PLAYER_SPEED = 150;
-Heist.PLAYER_RADIUS = 12;
-Heist.ALARM_SEEN_RATE = 50; // per second while any guard sees Rook
-Heist.ALARM_CAMERA_RATE = 40; // per second while any camera sees Rook
-Heist.ALARM_DECAY = 10; // per second while unseen
+export const PLAYER_SPEED = 155;
+export const PLAYER_RADIUS = 12;
+export const ALARM_GUARD_RATE = 55;
+export const ALARM_CAMERA_RATE = 40;
+export const ALARM_DECAY = 12;
+export const LASER_HIT = 25;
 
-Heist.state = null;
+export const audio = new VaultAudio();
+export const input = new VaultInput();
 
-Heist.loadLevel = function (index, keepScore) {
-  const def = Heist.LEVELS[index];
-  const marks = Heist.findMarks(def.map);
-  Heist.state = {
+export let state = null;
+
+export function loadLevel(index, keepScore, keepLives) {
+  const def = LEVELS[index];
+  const marks = findMarks(def.map);
+  state = {
     mode: 'play',
     levelIndex: index,
     level: def,
     map: def.map,
     player: { x: marks.start.x, y: marks.start.y },
     start: { x: marks.start.x, y: marks.start.y },
-    guards: def.guards.map(Heist.makeGuard),
-    cameras: def.cameras.map(Heist.makeCamera),
-    coins: def.coins.map(function (p) {
-      const c = Heist.tileCenter(p[0], p[1]);
-      return { x: c.x, y: c.y, taken: false };
-    }),
+    lastMove: { x: 0, y: 0 },
+    guards: def.guards.map(makeGuard),
+    cameras: def.cameras.map(makeCamera),
+    coins: def.coins.map(([tx, ty]) => ({ ...tileCenter(tx, ty), taken: false })),
+    gold: marks.gold.map((p) => ({ ...p, taken: false })),
     coinsTaken: 0,
     diamond: { x: marks.loot.x, y: marks.loot.y, taken: false },
     exit: { x: marks.exit.x, y: marks.exit.y },
-    alarm: 0,
+    alarm: def.startAlarm || 0,
     score: keepScore || 0,
     levelStartScore: keepScore || 0,
-    lives: 3,
+    lives: keepLives === undefined ? 3 : keepLives,
     smokes: def.smokes,
     decoys: def.decoys,
+    cloaks: def.cloaks,
+    cloakT: 0,
     smokeClouds: [],
     decoy: null,
     time: 0,
+    timeTotal: 0,
     toast: null,
     flash: 0,
     clearBonus: 0,
     frozen: false,
     blipTimer: 0,
     caughtTimer: 0,
+    laserCooldown: 0,
+    audio,
   };
-  return Heist.state;
-};
+  return state;
+}
 
-Heist.startGame = function () {
-  Heist.loadLevel(0, 0);
-  Heist.audio.ensure();
-};
+export function startGame() {
+  loadLevel(0, 0, 3);
+  audio.ensure();
+}
 
-Heist.nextLevel = function () {
-  const s = Heist.state;
-  Heist.loadLevel(s.levelIndex + 1, s.score);
-  Heist.state.lives = s.lives;
-};
+export function nextLevel() {
+  const s = state;
+  const total = s.timeTotal + s.time;
+  loadLevel(s.levelIndex + 1, s.score, s.lives);
+  state.timeTotal = total;
+}
 
-Heist.retryLevel = function () {
-  const s = Heist.state;
-  Heist.loadLevel(s.levelIndex, s.levelStartScore);
-};
+export function retryLevel() {
+  const s = state;
+  loadLevel(s.levelIndex, s.levelStartScore, 3);
+  state.timeTotal = s.timeTotal - s.time;
+}
 
-Heist.respawnAfterCaught = function () {
-  const s = Heist.state;
+export function respawnAfterCaught() {
+  const s = state;
   const def = s.level;
   s.player.x = s.start.x;
   s.player.y = s.start.y;
-  s.guards = def.guards.map(Heist.makeGuard);
-  s.cameras = def.cameras.map(Heist.makeCamera);
+  s.guards = def.guards.map(makeGuard);
+  s.cameras = def.cameras.map(makeCamera);
   s.smokeClouds = [];
   s.decoy = null;
+  s.cloakT = 0;
   s.alarm = 40;
   s.mode = 'play';
-};
+}
 
-Heist.toast = function (text) {
-  Heist.state.toast = { text, t: 2.6 };
-};
+export function toast(text) {
+  state.toast = { text, t: 2.6 };
+}
 
-Heist.throwDecoy = function (x, y) {
-  const s = Heist.state;
-  if (s.decoys <= 0 || s.mode !== 'play') return;
-  s.decoys -= 1;
-  s.score = Math.max(0, s.score - 50);
-  s.decoy = { x, y, t: 6 };
-  Heist.audio.decoy();
-  let best = null;
-  let bestD = 1e9;
-  for (const g of s.guards) {
-    const d = Heist.dist(g.x, g.y, x, y);
-    if (d < bestD) {
-      bestD = d;
-      best = g;
-    }
+export function update(dt) {
+  const s = state;
+  if (s.toast) {
+    s.toast.t -= dt;
+    if (s.toast.t <= 0) s.toast = null;
   }
-  if (best) Heist.guardInvestigate(best, x, y);
-};
-
-Heist.dropSmoke = function () {
-  const s = Heist.state;
-  if (s.smokes <= 0 || s.mode !== 'play') return;
-  s.smokes -= 1;
-  s.score = Math.max(0, s.score - 100);
-  s.smokeClouds.push({ x: s.player.x, y: s.player.y, r: 90, t: 4 });
-  Heist.audio.smoke();
-};
-
-Heist.update = function (dt) {
-  const s = Heist.state;
-  if (s.toast) s.toast.t -= dt;
   if (s.flash > 0) s.flash = Math.max(0, s.flash - dt * 1.5);
+  if (s.laserCooldown > 0) s.laserCooldown -= dt;
 
   if (s.mode === 'caught') {
     s.caughtTimer -= dt;
-    if (s.caughtTimer <= 0) Heist.respawnAfterCaught();
+    if (s.caughtTimer <= 0) respawnAfterCaught();
     return;
   }
   if (s.mode !== 'play') return;
 
   s.time += dt;
+  if (s.cloakT > 0) s.cloakT -= dt;
 
-  // --- Move Rook.
-  const mv = Heist.input.moveVector();
+  // Move Rook.
+  const mv = input.moveVector();
+  s.lastMove = mv;
   if (mv.x !== 0 || mv.y !== 0) {
-    const moved = Heist.moveCircle(
-      s.map, s.player.x, s.player.y, Heist.PLAYER_RADIUS,
-      mv.x * Heist.PLAYER_SPEED * dt, mv.y * Heist.PLAYER_SPEED * dt
-    );
+    const moved = moveCircle(s.map, s.player.x, s.player.y, PLAYER_RADIUS,
+      mv.x * PLAYER_SPEED * dt, mv.y * PLAYER_SPEED * dt);
     s.player.x = moved.x;
     s.player.y = moved.y;
   }
 
-  // --- Tools.
-  if (Heist.input.pressed('e')) Heist.dropSmoke();
-  if (Heist.input.pressed('q')) {
-    Heist.throwDecoy(s.player.x + 120, s.player.y);
-  }
-  while (Heist.input.clicks.length > 0) {
-    const c = Heist.input.clicks.shift();
-    Heist.throwDecoy(c.x, c.y);
-  }
-  if (Heist.input.pressed('m')) {
-    Heist.audio.muted = !Heist.audio.muted;
+  // Tools.
+  if (input.pressed('e')) dropSmoke(s);
+  if (input.pressed('q')) raiseCloak(s);
+  if (input.pressed('m')) audio.muted = !audio.muted;
+  while (input.clicks.length > 0) {
+    const c = input.clicks.shift();
+    throwDecoy(s, c.x, c.y);
   }
 
-  // --- Guards and cameras.
-  for (const g of s.guards) Heist.updateGuard(g, dt, s.player, s.map, s.smokeClouds);
-  for (const c of s.cameras) Heist.updateCamera(c, dt, s.player, s.map, s.smokeClouds);
+  // Guards and cameras.
+  const cloaked = s.cloakT > 0;
+  for (const g of s.guards) updateGuard(g, dt, s.player, s.map, s.smokeClouds, cloaked);
+  for (const c of s.cameras) updateCamera(c, dt, s.player, s.map, s.smokeClouds, cloaked);
 
-  // --- The alarm: climbs fast while seen, drains while hidden.
+  // The alarm: climbs fast while seen, drains while hidden.
   const seenByGuard = s.guards.some((g) => g.spotted);
   const seenByCamera = s.cameras.some((c) => c.spotted);
   if (seenByGuard || seenByCamera) {
-    s.alarm += (seenByGuard ? Heist.ALARM_SEEN_RATE : 0) * dt;
-    s.alarm += (seenByCamera ? Heist.ALARM_CAMERA_RATE : 0) * dt;
+    if (seenByGuard) s.alarm += ALARM_GUARD_RATE * dt;
+    if (seenByCamera) s.alarm += ALARM_CAMERA_RATE * dt;
     s.blipTimer -= dt;
     if (s.alarm > 50 && s.blipTimer <= 0) {
-      Heist.audio.alarmBlip();
+      audio.alarmBlip();
       s.blipTimer = 0.45;
     }
   } else {
-    s.alarm = Math.max(0, s.alarm - Heist.ALARM_DECAY * dt);
+    s.alarm = Math.max(0, s.alarm - ALARM_DECAY * dt);
   }
 
-  // --- Smoke clouds and decoys fade.
+  // Lasers: crossing a beam spikes the alarm.
+  const tile = tileAt(s.map, s.player.x, s.player.y);
+  if (isLaserTile(tile) && s.laserCooldown <= 0) {
+    s.alarm = Math.min(100, s.alarm + LASER_HIT);
+    s.laserCooldown = 1.2;
+    s.flash = 0.3;
+    audio.laserZap();
+    toast('LASER! The alarm jumps!');
+  }
+
+  // Smoke clouds and decoys fade.
   for (const sm of s.smokeClouds) sm.t -= dt;
   s.smokeClouds = s.smokeClouds.filter((sm) => sm.t > 0);
   if (s.decoy) {
@@ -176,41 +178,50 @@ Heist.update = function (dt) {
     if (s.decoy.t <= 0) s.decoy = null;
   }
 
-  // --- Pickups.
+  // Pickups: coins, gold bars, the loot itself.
   for (const c of s.coins) {
-    if (!c.taken && Heist.dist(s.player.x, s.player.y, c.x, c.y) < 22) {
+    if (!c.taken && dist(s.player.x, s.player.y, c.x, c.y) < 22) {
       c.taken = true;
       s.coinsTaken += 1;
       s.score += 100;
-      Heist.audio.coin();
+      audio.coin();
     }
   }
-  if (!s.diamond.taken && Heist.dist(s.player.x, s.player.y, s.diamond.x, s.diamond.y) < 24) {
+  for (const g of s.gold) {
+    if (!g.taken && dist(s.player.x, s.player.y, g.x, g.y) < 22) {
+      g.taken = true;
+      s.score += 250;
+      audio.coin();
+      toast('Gold bar! +250');
+    }
+  }
+  if (!s.diamond.taken && dist(s.player.x, s.player.y, s.diamond.x, s.diamond.y) < 24) {
     s.diamond.taken = true;
     s.score += 500;
-    Heist.audio.pickup();
-    Heist.toast('Diamond secured — reach the exit!');
+    audio.pickup();
+    toast(`${s.level.lootName} secured — reach the exit!`);
   }
 
-  // --- The exit opens once the diamond is taken.
-  if (s.diamond.taken && Heist.dist(s.player.x, s.player.y, s.exit.x, s.exit.y) < 26) {
+  // The exit opens once the loot is taken.
+  if (s.diamond.taken && dist(s.player.x, s.player.y, s.exit.x, s.exit.y) < 26) {
     s.clearBonus = Math.max(0, 300 - Math.floor(s.time) * 2);
     s.score += s.clearBonus;
-    Heist.audio.win();
-    if (s.levelIndex >= Heist.LEVELS.length - 1) {
+    audio.win();
+    if (s.levelIndex >= LEVELS.length - 1) {
       s.mode = 'win';
+      s.timeTotal += s.time;
     } else {
       s.mode = 'clear';
     }
     return;
   }
 
-  // --- Caught at full alarm.
+  // Caught at full alarm.
   if (s.alarm >= 100) {
     s.alarm = 100;
     s.lives -= 1;
     s.flash = 0.6;
-    Heist.audio.caught();
+    audio.caught();
     if (s.lives <= 0) {
       s.mode = 'over';
     } else {
@@ -218,35 +229,34 @@ Heist.update = function (dt) {
       s.caughtTimer = 1.4;
     }
   }
-};
+}
 
-/* Staged states for the screenshots: frozen frames of the game itself,
-   so the cover shows the thief, the cones, the cameras, the loot and the
-   alarm meter all in one frame. */
-Heist.stageShot = function (name) {
-  const s = Heist.state;
-  const tile = Heist.tileCenter;
-  if (name === 'play') {
-    // Mid-heist in room one: Rook behind a case, a cone sweeping at him.
-    s.player.x = tile(11, 7).x;
-    s.player.y = tile(11, 7).y;
-    s.guards[0].x = tile(14, 7).x;
-    s.guards[0].y = tile(14, 7).y;
-    s.guards[0].facing = Math.PI;
-    s.guards[1].x = tile(18, 12).x;
-    s.guards[1].y = tile(18, 12).y;
-    s.guards[1].facing = -Math.PI / 2;
-    s.cameras[0].angle = Math.PI * 0.5;
-    s.cameras[1].angle = Math.PI * 1.5;
-    s.alarm = 55;
-    s.coins[0].taken = true;
-    s.coinsTaken = 1;
-    s.score = 100;
-    s.time = 42;
-  } else if (name === 'end') {
-    // Room two, diamond in hand, alarm high, sprinting for the exit.
-    Heist.loadLevel(1, 650);
-    const s2 = Heist.state;
+// Staged states for the screenshots: frozen frames of the game itself, so
+// the cover shows the thief, the cones, the cameras, the loot and the alarm
+// meter all in one frame.
+export function stageShot(name) {
+  const tile = tileCenter;
+  if (name === 'cover') {
+    // Room one mid-heist: Rook in the open, a cone sweeping onto him.
+    state.player.x = tile(11, 7).x;
+    state.player.y = tile(11, 7).y;
+    state.guards[0].x = tile(15, 7).x;
+    state.guards[0].y = tile(15, 7).y;
+    state.guards[0].facing = Math.PI;
+    state.guards[1].x = tile(18, 12).x;
+    state.guards[1].y = tile(18, 12).y;
+    state.guards[1].facing = -Math.PI / 2;
+    state.cameras[0].angle = Math.PI * 0.5;
+    state.cameras[1].angle = Math.PI * 1.5;
+    state.alarm = 55;
+    state.coins[0].taken = true;
+    state.coinsTaken = 1;
+    state.score = 100;
+    state.time = 42;
+  } else if (name === 'tense') {
+    // Room two, loot in hand, alarm high, a guard giving chase.
+    loadLevel(1, 650, 3);
+    const s2 = state;
     s2.diamond.taken = true;
     s2.player.x = tile(18, 12).x;
     s2.player.y = tile(18, 12).y;
@@ -266,56 +276,108 @@ Heist.stageShot = function (name) {
     s2.coinsTaken = 2;
     s2.score = 850;
     s2.time = 96;
-  } else if (name === 'vault') {
-    // Room three at the start: four guards, three cameras, full board.
-    Heist.loadLevel(2, 1400);
-    Heist.state.time = 8;
+  } else if (name === 'tool') {
+    // Room three: smoke blooming, cloak up, a decoy ringing across the hall.
+    loadLevel(2, 1400, 3);
+    const s3 = state;
+    s3.player.x = tile(11, 7).x;
+    s3.player.y = tile(11, 7).y;
+    s3.smokeClouds.push({ x: s3.player.x, y: s3.player.y, r: 95, t: 4 });
+    s3.cloakT = 2.5;
+    s3.cloaks = 1;
+    s3.smokes = 3;
+    s3.decoy = { x: tile(18, 7).x, y: tile(18, 7).y, t: 5 };
+    s3.guards[3].x = tile(17, 8).x;
+    s3.guards[3].y = tile(17, 8).y;
+    s3.guards[3].facing = Math.PI / 2;
+    s3.guards[3].investigateT = 4;
+    s3.guards[3].investigateX = tile(18, 7).x;
+    s3.guards[3].investigateY = tile(18, 7).y;
+    s3.guards[0].x = tile(5, 2).x;
+    s3.guards[0].y = tile(5, 2).y;
+    s3.guards[0].facing = 0;
+    s3.cameras[0].angle = Math.PI * 0.5;
+    s3.cameras[1].angle = Math.PI * 1.5;
+    s3.alarm = 34;
+    s3.score = 1400;
+    s3.time = 58;
+    s3.toast = { text: 'Cloak up — unseen for 3 seconds!', t: 9 };
+  } else if (name === 'escape') {
+    // Room four, the getaway: loot taken, sprinting for the skylight exit.
+    loadLevel(3, 2100, 2);
+    const s4 = state;
+    s4.diamond.taken = true;
+    s4.player.x = tile(17, 12).x;
+    s4.player.y = tile(17, 12).y;
+    s4.guards[0].x = tile(12, 10).x;
+    s4.guards[0].y = tile(12, 10).y;
+    s4.guards[0].facing = 0;
+    s4.guards[0].alert = 2.5;
+    s4.guards[0].chaseX = s4.player.x;
+    s4.guards[0].chaseY = s4.player.y;
+    s4.guards[1].x = tile(20, 6).x;
+    s4.guards[1].y = tile(20, 6).y;
+    s4.guards[1].facing = Math.PI;
+    s4.cameras[0].angle = Math.PI * 0.5;
+    s4.alarm = 62;
+    s4.coins[0].taken = true;
+    s4.coinsTaken = 1;
+    s4.score = 2100;
+    s4.time = 74;
+    s4.toast = { text: 'The case is yours — RUN for the skylight!', t: 9 };
   }
-  // 'start' needs nothing: room one as it opens.
-  Heist.state.frozen = true;
-  Heist.state.mode = 'play';
-};
+  // 'cover' needs nothing else: room one as it opens, staged mid-heist.
+  state.frozen = true;
+  state.mode = 'play';
+}
 
-Heist.handleClick = function () {
-  const s = Heist.state;
+export function handleClick() {
+  const s = state;
   if (s.mode === 'title') {
-    Heist.audio.ensure();
-    Heist.audio.click();
-    Heist.startGame();
+    audio.ensure();
+    audio.click();
+    startGame();
   } else if (s.mode === 'clear') {
-    Heist.audio.click();
-    Heist.nextLevel();
+    audio.click();
+    nextLevel();
   } else if (s.mode === 'over') {
-    Heist.audio.click();
-    Heist.retryLevel();
+    audio.click();
+    retryLevel();
   } else if (s.mode === 'win') {
-    Heist.audio.click();
-    Heist.startGame();
+    audio.click();
+    startGame();
   }
-};
+}
 
-Heist.boot = function () {
+export function boot() {
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
-  Heist.input.attach(canvas);
+  // Debug hook for playtesting: lets a test driver read the live state.
+  window.__vault = { get state() { return state; }, startGame, loadLevel };
+  input.attach(canvas);
   canvas.addEventListener('mousedown', () => {
     // Clicks on screens advance them; clicks in play toss decoys (queued).
-    if (Heist.state.mode !== 'play') Heist.handleClick();
+    // A screen-advancing click must not also become a decoy when play starts.
+    if (state.mode !== 'play') {
+      handleClick();
+      input.clicks.length = 0;
+    }
   });
   window.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && Heist.state.mode !== 'play') Heist.handleClick();
+    if (e.key === 'Enter' && state.mode !== 'play') handleClick();
   });
 
   // A fresh load shows the title screen over room one.
-  Heist.loadLevel(0, 0);
-  Heist.state.mode = 'title';
+  loadLevel(0, 0, 3);
+  state.mode = 'title';
 
   const params = new URLSearchParams(window.location.search);
   const shot = params.get('shot');
   if (shot) {
-    Heist.stageShot(shot);
+    stageShot(shot);
     // Frozen frame: one draw, no loop, so the shot is deterministic.
-    Heist.drawGame(ctx, Heist.state, 1.234);
+    drawGame(ctx, state, 1.234);
+    drawHud(ctx, state, 1.234);
     return;
   }
 
@@ -325,11 +387,13 @@ Heist.boot = function () {
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
     t += dt;
-    Heist.update(dt);
-    Heist.drawGame(ctx, Heist.state, t);
+    update(dt);
+    drawGame(ctx, state, t);
+    drawHud(ctx, state, t);
+    input.endFrame();
     requestAnimationFrame(frame);
   };
   requestAnimationFrame(frame);
-};
+}
 
-document.addEventListener('DOMContentLoaded', Heist.boot);
+document.addEventListener('DOMContentLoaded', boot);
