@@ -1,0 +1,24 @@
+/* The Velvet Vault — page chrome. The game itself is the canvas. */
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: #070912;
+  overflow: hidden;
+}
+
+body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+canvas {
+  display: block;
+  width: min(100vw, 160vh);
+  height: min(100vh, 62.5vw);
+  background: #10142a;
+  box-shadow: 0 0 0 2px #8a6d2f, 0 0 48px rgba(0, 0, 0, 0.8);
+  cursor: crosshair;
+}
